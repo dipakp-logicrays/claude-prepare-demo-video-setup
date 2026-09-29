@@ -24,6 +24,8 @@ function findChrome() {
   return ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium'].find((p) => fs.existsSync(p));
 }
 const FADE = 0.35, LEAD = 0.5, TAIL = 0.9;
+// Beat scenes: silence before the first beat, pause between beats, hold after the last one (seconds)
+const B_LEAD = 0.7, B_TAIL = 1.4;
 
 // ---------- args ----------
 const argv = process.argv.slice(2);
@@ -92,6 +94,37 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dur = (f) => parseFloat(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).toString());
 const ff = (...a) => execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...a]);
 const link = (target, at) => { try { fs.unlinkSync(at); } catch {} fs.symlinkSync(target, at); };
+const crypto = require('crypto');
+const hash = (t) => crypto.createHash('sha1').update(t).digest('hex').slice(0, 12);
+
+// ---------- speech ----------
+// `pronounce` maps written words to how the voice should say them ({ Goofre: 'go free' }); captions are untouched.
+function spoken(text) {
+  let out = text;
+  for (const [from, to] of Object.entries(spec.pronounce || {})) {
+    const re = new RegExp(`(?<![\\w.])${from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w])`, 'gi');
+    out = out.replace(re, to);
+  }
+  return out;
+}
+const SPEED = () => String(spec.voiceSpeed || 1.22);
+function synth(text, wav) {
+  const r = spawnSync(PIPER, ['-m', VOICE, '-f', wav, '--sentence-silence', String(spec.sentencePause ?? 0.5), '--length-scale', SPEED()], { input: spoken(text) });
+  if (r.status !== 0) die(`piper failed: ${r.stderr}`);
+}
+// Each beat's audio is made BEFORE recording, so the recording can wait exactly as long as the sentence takes.
+// Files are reused while the text, voice and speed are unchanged.
+function prepareBeats(scene) {
+  const dir = path.join(WORK, 'beats'); fs.mkdirSync(dir, { recursive: true });
+  scene.beats.forEach((b, i) => {
+    b.key = hash([b.say || '', opt.audio ? opt.voice : 'silent', SPEED(), JSON.stringify(spec.pronounce || {})].join('|'));
+    if (!b.say) { b.duration = b.hold || 1.5; return; }
+    if (!opt.audio) { b.duration = b.say.split(/\s+/).length / 2.3 + 0.3; return; }
+    b.wav = path.join(dir, `${scene.id}-${i}-${b.key}.wav`);
+    if (!fs.existsSync(b.wav)) synth(b.say, b.wav);
+    b.duration = dur(b.wav);
+  });
+}
 
 // ---------- source archive: everything needed to reproduce this render ----------
 // source/<render>/ holds the scenes file, a snapshot of the engine, the narration text and a README.
@@ -153,9 +186,25 @@ async function record(scene) {
     on = true; await sleep(80);
   };
   const k = makeKit(page, start, spec.brand);
+  const gap = spec.beatGap ?? 0.8;
   try {
     if (spec.setup) await spec.setup(k, scene);
-    await scene.run(k);
+    if (scene.beats) {
+      // Picture follows the voice: each beat's visual step runs, then we wait until its sentence has been spoken.
+      if (scene.setup) await scene.setup(k);
+      await start();
+      await sleep(B_LEAD * 1000);
+      for (const b of scene.beats) {
+        b.t = performance.now() / 1000;
+        if (b.do) await b.do(k, b);
+        const spent = performance.now() / 1000 - b.t;
+        if (spent > b.duration + gap) console.log(`  ! ${scene.id}: a beat's visuals took ${spent.toFixed(1)}s but its narration is ${b.duration.toFixed(1)}s`);
+        await sleep(Math.max(0, b.duration + gap - spent) * 1000);
+      }
+      await sleep(B_TAIL * 1000);
+    } else {
+      await scene.run(k);
+    }
     if (!started) throw new Error('scene never called k.start() or k.slide()');
   } finally { tEnd = performance.now() / 1000; on = false; await cdp.send('Page.stopScreencast').catch(() => {}); await ctx.close(); }
   if (!frames.length) throw new Error('no frames captured');
@@ -168,6 +217,10 @@ async function record(scene) {
   });
   list += `file '${frames[frames.length - 1].f}'\n`;
   fs.writeFileSync(path.join(dir, 'list.txt'), list);
+  if (scene.beats) {
+    scene.beats.forEach((b) => { b.offset = Math.max(0, b.t - frames[0].t); });
+    fs.writeFileSync(path.join(RAW, scene.id + '.beats.json'), JSON.stringify(scene.beats.map((b) => ({ key: b.key, offset: b.offset, duration: b.duration }))));
+  }
   const out = path.join(RAW, scene.id + '.mp4');
   ff('-f', 'concat', '-safe', '0', '-i', path.join(dir, 'list.txt'),
     '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p',
@@ -182,10 +235,19 @@ function finish(scene) {
   const out = path.join(CLIPS, scene.id + '.mp4');
   const v = dur(raw);
   let total = v, audioIn, af;
-  if (opt.audio && scene.narration) {
+  if (scene.beats && opt.audio && scene.beats.some((b) => b.wav)) {
+    // Each sentence starts exactly where its beat started in the recording.
+    const voiced = scene.beats.filter((b) => b.wav);
+    const last = voiced[voiced.length - 1];
+    scene.speech = voiced.reduce((a, b) => a + b.duration, 0);
+    total = Math.max(v, last.offset + last.duration + 0.5);
+    audioIn = voiced.flatMap((b) => ['-i', b.wav]);
+    const parts = voiced.map((b, i) => `[${i + 1}:a]aresample=48000,aformat=channel_layouts=stereo,adelay=${Math.round(b.offset * 1000)}:all=1[b${i}]`);
+    const mix = voiced.length > 1 ? `${voiced.map((_, i) => `[b${i}]`).join('')}amix=inputs=${voiced.length}:normalize=0:duration=longest[m]` : '[b0]anull[m]';
+    af = `${parts.join(';')};${mix};[m]loudnorm=I=-16:TP=-1.5:LRA=11,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,apad,atrim=0:${total.toFixed(3)},afade=t=out:st=${(total - FADE).toFixed(3)}:d=${FADE}[a]`;
+  } else if (opt.audio && scene.narration && !scene.beats) {
     const wav = path.join(WORK, scene.id + '.wav');
-    const r = spawnSync(PIPER, ['-m', VOICE, '-f', wav, '--sentence-silence', '0.35', '--length-scale', String(spec.voiceSpeed || 1.05)], { input: scene.narration });
-    if (r.status !== 0) die(`piper failed on ${scene.id}: ${r.stderr}`);
+    synth(scene.narration, wav);
     scene.speech = dur(wav);
     total = Math.max(v, LEAD + scene.speech + TAIL);
     audioIn = ['-i', wav];
@@ -204,9 +266,17 @@ function finish(scene) {
 
 (async () => {
   const only = opt.only ? new Set(opt.only.split(',').map(slug)) : null;
+  for (const s of scenes) if (s.beats) { prepareBeats(s); s.narration = s.beats.map((b) => b.say).filter(Boolean).join(' '); }
   for (const s of scenes) {
     const cached = path.join(RAW, s.id + '.mp4');
-    const want = !only || only.has(slug(s.name)) || only.has(s.id);
+    let want = !only || only.has(slug(s.name)) || only.has(s.id);
+    if (!want && s.beats) {
+      // A cached beat recording is only reusable if every sentence is unchanged (same text, voice, speed).
+      const meta = path.join(RAW, s.id + '.beats.json');
+      const saved = fs.existsSync(meta) ? JSON.parse(fs.readFileSync(meta)) : null;
+      if (saved && saved.length === s.beats.length && saved.every((x, i) => x.key === s.beats[i].key)) saved.forEach((x, i) => { s.beats[i].offset = x.offset; });
+      else if (fs.existsSync(cached)) { console.log(`· ${s.id}: narration changed — re-recording`); want = true; }
+    }
     if (!want && fs.existsSync(cached)) { console.log(`· ${s.id}: reusing recording`); continue; }
     if (!want) console.log(`· ${s.id}: no cached recording — recording anyway`);
     try { await record(s); console.log(`✔ ${s.id}: recorded ${dur(cached).toFixed(1)}s`); }

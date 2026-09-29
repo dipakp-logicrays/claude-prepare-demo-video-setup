@@ -47,6 +47,10 @@ function palette(brand = {}) {
 }
 
 function highlightJson(obj) {
+  return highlightJsonRaw(obj).split('\n').map((l) => `<span class="ln">${l || ' '}</span>`).join('');
+}
+
+function highlightJsonRaw(obj) {
   return esc(JSON.stringify(obj, null, 2)).replace(
     /("(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
     (m) => {
@@ -58,6 +62,10 @@ function highlightJson(obj) {
 }
 
 const JSON_CSS = `.jk{color:#93c5fd}.js{color:#86efac}.jn{color:#fcd34d}.jb{color:#f9a8d4}`;
+// Line marking (k.mark): the lines being talked about light up, the rest fade back.
+const markCss = (p) => `.ln{display:block;border-radius:6px;padding:0 10px;margin:0 -10px;transition:background .5s,opacity .5s,box-shadow .5s}
+.ln.mark{background:${p.accent}30;box-shadow:inset 5px 0 ${p.accent}}
+.marking .ln:not(.mark){opacity:.32}`;
 
 function overlayCss(p) {
   return `
@@ -82,7 +90,8 @@ function overlayCss(p) {
 #dv-drawer .jk{color:#93c5fd !important}#dv-drawer .js{color:#86efac !important}#dv-drawer .jn{color:#fcd34d !important}#dv-drawer .jb{color:#f9a8d4 !important}
 #dv-cursor{position:fixed;z-index:2147483647;width:28px;height:28px;margin:-14px 0 0 -14px;border-radius:50%;pointer-events:none;
   background:${p.accent}55;border:3px solid ${p.accent};transition:left .6s cubic-bezier(.2,.8,.2,1),top .6s cubic-bezier(.2,.8,.2,1),transform .15s}
-#dv-cursor.click{transform:scale(.6)}`;
+#dv-cursor.click{transform:scale(.6)}
+#dv-drawer ${markCss(p).replace(/\n\./g, '\n#dv-drawer .')}`;
 }
 
 function slideCss(p) {
@@ -103,7 +112,31 @@ li b{color:#fff}li .dot{flex:0 0 18px;height:18px;margin-top:14px;border-radius:
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:70px}
 .foot{position:absolute;left:140px;bottom:60px;font-size:22px;color:${p.light};opacity:.8}
 .flow{animation:dash 1.2s linear infinite}@keyframes dash{to{stroke-dashoffset:-36}}
-${JSON_CSS}`;
+/* click-by-click reveal (k.next / k.reveal) and spotlight (k.focus) */
+.step{opacity:0;transform:translateY(22px);transition:opacity .8s cubic-bezier(.2,.8,.2,1),transform .8s cubic-bezier(.2,.8,.2,1),filter .6s}
+svg .step{transform-box:fill-box}
+.step.on{opacity:1;transform:none}
+body.dim .step.on:not(.focus){opacity:.22;filter:saturate(.2)}
+.focus{filter:drop-shadow(0 0 20px ${p.accent}aa)}
+/* explain + cards layouts */
+.ex{position:absolute;inset:0;padding:90px 110px;display:grid;grid-template-columns:1.05fr .95fr;gap:70px;align-items:center}
+.pt{display:flex;gap:26px;align-items:flex-start;margin:34px 0}
+.pt .n{flex:0 0 64px;height:64px;border-radius:50%;background:${p.primary};color:#fff;font:800 30px ${p.font};display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 8px ${p.accent}26}
+.pt h3{margin:4px 0 6px;font-size:36px;color:#fff}.pt div.t{font-size:27px;line-height:1.45;color:${p.muted}}
+.pane{background:${p.bgDeep};border:2px solid ${p.bgGlow};border-radius:18px;overflow:hidden;display:flex;flex-direction:column;height:760px}
+.pane .hd{padding:16px 24px;background:${p.bg};color:${p.light};font:600 19px ui-monospace,Menlo,monospace;border-bottom:1px solid ${p.bgGlow}}
+.pane pre{margin:0;padding:22px 28px 300px;overflow:hidden;flex:1;font:19px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;color:${p.text}}
+.search{display:flex;align-items:center;gap:18px;background:#fff;color:#111;border-radius:40px;padding:18px 30px;font-size:32px;width:760px;margin:26px 0 40px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+.search .q::after{content:'';display:inline-block;width:3px;height:34px;background:${p.primary};margin-left:3px;vertical-align:middle;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:40px}
+.card{background:#fff;color:#111;border-radius:22px;overflow:hidden;box-shadow:0 20px 50px rgba(0,0,0,.4)}
+.card img{width:100%;height:330px;object-fit:contain;background:#f5f5f5;display:block}
+.card .b{padding:22px 26px}.card .ti{font-size:28px;font-weight:800}.card .pr{font-size:30px;color:${p.primary};font-weight:800;margin-top:6px}
+.card .tg{font-size:20px;color:#555;margin-top:8px}
+.badge{display:inline-flex;gap:14px;align-items:center;margin-top:40px;padding:16px 26px;border-radius:14px;background:${p.primary};color:#fff;font-size:26px;font-weight:700}
+${JSON_CSS}
+${markCss(p)}`;
 }
 
 function makeKit(page, start, brand) {
@@ -212,6 +245,66 @@ function makeKit(page, start, brand) {
       await page.locator(selector).first().pressSequentially(text, { delay });
     },
 
+    // ---------- click-by-click reveal ----------
+    /** Reveal the next `count` hidden .step elements, in document order — the "next slide click". */
+    async next(count = 1) {
+      await page.evaluate((n) => {
+        [...document.querySelectorAll('.step:not(.on)')].slice(0, n).forEach((e) => e.classList.add('on'));
+      }, count);
+    },
+    /** Reveal `count` steps spread evenly over `seconds` (e.g. a list read out in one sentence). */
+    async revealAcross(count, seconds) {
+      for (let i = 0; i < count; i++) {
+        await k.next();
+        if (i < count - 1) await sleep((seconds * 1000) / count);
+      }
+    },
+    /** Reveal specific element(s) by selector. */
+    async reveal(selector) {
+      await page.evaluate((s) => document.querySelectorAll(s).forEach((e) => e.classList.add('on')), selector);
+    },
+    /** Spotlight: dim every revealed step except `selector`. k.focus(null) clears. */
+    async focus(selector) {
+      await page.evaluate((s) => {
+        document.querySelectorAll('.focus').forEach((e) => e.classList.remove('focus'));
+        document.body.classList.toggle('dim', !!s);
+        if (s) document.querySelectorAll(s).forEach((e) => e.classList.add('focus'));
+      }, selector || null);
+    },
+    /**
+     * Light up the JSON line(s) containing each text (e.g. '"price"') in '#code' or the drawer, fade the rest,
+     * and smoothly scroll the first match to the middle. k.mark(null) clears.
+     */
+    async mark(texts, { scope = '#code, #dv-drawer pre' } = {}) {
+      const list = texts == null ? [] : [].concat(texts);
+      await page.evaluate(async ({ list, scope }) => {
+        const box = document.querySelector(scope);
+        if (!box) return;
+        box.querySelectorAll('.ln.mark').forEach((l) => l.classList.remove('mark'));
+        box.classList.toggle('marking', list.length > 0);
+        const lines = [...box.querySelectorAll('.ln')];
+        let first = null;
+        for (const t of list) {
+          const hit = lines.find((l) => l.textContent.includes(t) && !l.classList.contains('mark'));
+          if (hit) { hit.classList.add('mark'); first ||= hit; }
+        }
+        if (!first) return;
+        const to = Math.max(0, first.offsetTop - box.clientHeight / 2 + 40);
+        const from = box.scrollTop, steps = 24;
+        for (let i = 1; i <= steps; i++) {
+          box.scrollTop = from + ((to - from) * (1 - Math.pow(1 - i / steps, 3)));
+          await new Promise((r) => setTimeout(r, 25));
+        }
+      }, { list, scope });
+    },
+    /** Type text into a generated element (e.g. the search box of cardsSlide). */
+    async typeText(selector, text, delay = 90) {
+      for (const ch of text) {
+        await page.evaluate(({ s, c }) => { const e = document.querySelector(s); if (e) e.textContent += c; }, { s: selector, c: ch });
+        await sleep(delay);
+      }
+    },
+
     // ---------- generated screens ----------
     /** Show a full-screen HTML document for `seconds`. Starts recording on a blank frame so entrance animations are captured. */
     async slide(html, seconds) {
@@ -219,6 +312,13 @@ function makeKit(page, start, brand) {
       await start();
       await page.setContent(html);
       await sleep(seconds * 1000);
+    },
+    /** Show a generated slide and start recording (for beat scenes: use in `setup`, then reveal with k.next()). */
+    async present(html) {
+      await page.setContent(`<body style="margin:0;background:${p.bgDeep}"></body>`);
+      await start();
+      await page.setContent(html);
+      await k.overlay();
     },
     /** Wrap raw body HTML + extra CSS in the branded slide document. */
     doc,
@@ -234,17 +334,43 @@ function makeKit(page, start, brand) {
         <div class="bar in d2"></div>${body ? `<p class="in d3">${body}</p>` : ''}</div>`);
     },
     /** bullets: array of HTML strings (use <b> for emphasis). */
-    bulletSlide({ kicker = '', title, bullets = [], footer = '' }) {
+    /** steps:true → bullets (and footer) start hidden; reveal them one per beat with k.next(). */
+    bulletSlide({ kicker = '', title, bullets = [], footer = '', steps = false }) {
+      const cls = (i) => (steps ? 'step' : `in d${Math.min(i + 2, 8)}`);
       return doc(`<div class="wrap">${kicker ? `<div class="k in">${kicker}</div>` : ''}<h2 class="in d1">${title}</h2>
-        <ul>${bullets.map((b, i) => `<li class="in d${Math.min(i + 2, 8)}"><span class="dot"></span><span>${b}</span></li>`).join('')}</ul>
-        ${footer ? `<p class="in d${Math.min(bullets.length + 2, 8)}" style="margin-top:40px">${footer}</p>` : ''}</div>`);
+        <ul>${bullets.map((b, i) => `<li class="${cls(i)}"><span class="dot"></span><span>${b}</span></li>`).join('')}</ul>
+        ${footer ? `<p class="${cls(bullets.length)}" style="margin-top:40px">${footer}</p>` : ''}</div>`);
     },
     /** columns: [{ title, bullets: [html] }, …] (2 recommended). */
-    columnsSlide({ kicker = '', columns = [] }) {
+    /** steps:true → each column heading and bullet starts hidden (document order: column 1, then column 2). */
+    columnsSlide({ kicker = '', columns = [], steps = false }) {
+      const cls = (i) => (steps ? 'step' : `in d${Math.min(i + 2, 8)}`);
       return doc(`<div class="wrap" style="padding:90px 140px">${kicker ? `<div class="k in">${kicker}</div>` : ''}
-        <div class="grid2" style="margin-top:30px">${columns.map((c) => `<div><h2 class="in d1" style="font-size:46px">${c.title}</h2>
-          <ul style="margin-top:14px">${c.bullets.map((b, i) => `<li class="in d${Math.min(i + 2, 8)}" style="font-size:28px"><span class="dot"></span><span>${b}</span></li>`).join('')}</ul></div>`).join('')}
+        <div class="grid2" style="margin-top:30px">${columns.map((c) => `<div><h2 class="${steps ? 'step' : 'in d1'}" style="font-size:46px">${c.title}</h2>
+          <ul style="margin-top:14px">${c.bullets.map((b, i) => `<li class="${cls(i)}" style="font-size:30px"><span class="dot"></span><span>${b}</span></li>`).join('')}</ul></div>`).join('')}
         </div></div>`);
+    },
+    /**
+     * Plain-language explainer: numbered points on the left (each a step), optional JSON pane on the right
+     * whose lines can be lit up with k.mark() as each point is spoken.
+     * points: [{ title, text }]
+     */
+    explainSlide({ kicker = '', title, points = [], json = null, jsonTitle = '' }) {
+      return doc(`<div class="ex"><div>${kicker ? `<div class="k in">${kicker}</div>` : ''}<h2 class="in d1" style="font-size:54px">${title}</h2>
+        ${points.map((pt, i) => `<div class="pt step"><div class="n">${i + 1}</div><div><h3>${pt.title}</h3>${pt.text ? `<div class="t">${pt.text}</div>` : ''}</div></div>`).join('')}</div>
+        ${json ? `<div class="pane in d2"><div class="hd">${esc(jsonTitle)}</div><pre id="code">${typeof json === 'string' ? esc(json) : highlightJson(json)}</pre></div>` : '<div></div>'}</div>`);
+    },
+    /**
+     * Search results as product cards. Type the query with k.typeText('#q', '…'), reveal cards with k.next().
+     * cards: [{ img, title, price, tags }]; badge: optional closing line (a step).
+     */
+    cardsSlide({ kicker = '', title, cards = [], badge = '' }) {
+      return doc(`<div class="wrap" style="padding:80px 120px;justify-content:flex-start">${kicker ? `<div class="k in">${kicker}</div>` : ''}
+        <h2 class="in d1" style="font-size:52px">${title}</h2>
+        <div class="search in d2"><span>🔍</span><span class="q" id="q"></span></div>
+        <div class="cards">${cards.map((c) => `<div class="card step">${c.img ? `<img src="${esc(c.img)}">` : ''}<div class="b"><div class="ti">${esc(c.title)}</div>
+          ${c.price ? `<div class="pr">${esc(c.price)}</div>` : ''}${c.tags ? `<div class="tg">${esc(c.tags)}</div>` : ''}</div></div>`).join('')}</div>
+        ${badge ? `<div><div class="badge step">${badge}</div></div>` : ''}</div>`);
     },
     endSlide({ line = '' }) {
       return doc(`<div class="wrap" style="align-items:center;text-align:center">${p.logo ? logoHtml(170) : ''}

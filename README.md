@@ -21,10 +21,13 @@ Making even a simple product demo video usually means screen-recording software,
 | Problem | What this does about it |
 |---|---|
 | Screen recordings are shaky, mistimed and full of popups | Scenes are **scripted**: headless Chrome drives the page, scrolls smoothly, strips cookie banners, and the timing is the same every run |
+| Voice and picture drift apart | Scenes are written as **beats**: one sentence plus the one visual step it describes. Each sentence's audio is generated first and measured, and the recording waits for it, so what's said and what's shown always line up |
+| Slides dump everything on screen at once | **Click-by-click reveal**: boxes, bullets and cards appear as they're spoken (like pressing *next* in PowerPoint), and a **spotlight** dims everything except the part being explained |
+| Walls of JSON nobody can follow | **Line marking** lights up only the lines being talked about; **plain-language cards** and **product cards** for non-technical viewers |
 | Viewers don't know what they're looking at | Animated **lower-third captions**, element **highlights** and a visible **cursor** on real pages |
 | "What the machine sees" is invisible | Slide-in **JSON panels** next to the live page (structured data, meta tags, API payloads) |
 | API demos are unreadable in a raw terminal | **Terminal** and **HTTP response** screens that type the command, then reveal a syntax-highlighted response, with live data |
-| Recording a voiceover is a whole session | Optional **neural narration** (Piper, runs locally, free, nothing sent to any service), loudness-normalized and fitted to each scene |
+| Recording a voiceover is a whole session | Optional **neural narration** (Piper, runs locally, free, nothing sent to any service) at a calm ~130 words per minute, loudness-normalized, with a per-video **pronunciation list** |
 | One wrong scene means redoing everything | `--only scene-name` re-records just that scene; the rest reuse the cached recording |
 | Videos scattered across `~/Desktop` and `/tmp` | Every render filed under `~/Documents/claude-videos/<path>/` |
 | The script vanishes when `/tmp` is cleared | The scenes file **and a snapshot of the engine** are archived beside each video, so any render can be reproduced later |
@@ -153,21 +156,21 @@ open      ~/Documents/claude-videos/example-store/example-store-latest.mp4   # m
 
 ### Example 1: the bundled example (no Claude needed)
 
-The skill ships with [`example.scenes.js`](skills/demo-video/example.scenes.js), a 5-scene tour of everything it can do: a title slide, an animated bullet slide, a live Wikipedia page with highlights, a cursor and its JSON-LD in a side panel, a terminal running a real `curl`, and an end card.
+The skill ships with [`example.scenes.js`](skills/demo-video/example.scenes.js), a 5-scene tour written as beats: a title, a bullet slide that reveals one point per sentence, a live Wikipedia page with highlights, a cursor and its structured data in a side panel (with the lines being discussed lit up), a plain-language explainer beside a live API response, and an end card.
 
 ```bash
 node ~/.claude/skills/demo-video/render.js ~/.claude/skills/demo-video/example.scenes.js --audio --path examples
 ```
 
 ```
-✔ 00_title: recorded 5.1s
-✔ 01_bullets: recorded 6.1s
-✔ 02_web-page: recorded 13.0s
-✔ 03_api: recorded 5.6s
-✔ 04_end: recorded 4.1s
+✔ 00_title: recorded …
+✔ 01_reveal: recorded …
+✔ 02_web-page: recorded …
+✔ 03_explain: recorded …
+✔ 04_end: recorded …
 …
-→ ~/Documents/claude-videos/examples/example-2026-09-29-1144.mp4
-  0:33.9 · 5 scenes · narrated (ryan) · 3.2 MB
+→ ~/Documents/claude-videos/examples/example-<stamp>.mp4
+  1:06 · 5 scenes · narrated (ryan) · 3.8 MB
 ```
 
 Copy it to start your own: `cp ~/.claude/skills/demo-video/example.scenes.js ./my-demo.scenes.js`.
@@ -225,42 +228,50 @@ You get a narrated video where each scene lasts as long as its narration, with c
   preview: ~/Documents/claude-videos/acme-checkout/preview/acme-checkout-2026-09-29-1030/montage.png
 ```
 
-### Example 4: an API walkthrough
+### Example 4: an API walkthrough, explained simply
 
-Terminal and HTTP-response screens show real calls with real responses. A scenes file you (or Claude) might write:
+Pair a plain-language explanation with the real response, lighting up each line as it's mentioned. For a technical audience, add a typed terminal. A scenes file you (or Claude) might write:
 
 ```js
+const URL = 'https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&current=temperature_2m';
+
 module.exports = {
   slug: 'weather-api',
-  brand: { primary: '#1d4ed8', logo: 'Skycast™' },
+  brand: { primary: '#1d4ed8', logo: 'Skycast™' },     // the whole palette follows this colour
+  pronounce: { Skycast: 'Sky cast' },
+
   scenes: [
     {
       name: 'intro',
-      narration: 'Skycast gives you the forecast for any city with one request.',
-      run: (k) => k.slide(k.sectionSlide({ kicker: 'API', title: 'One request, any city' }), 5),
+      setup: (k) => k.present(k.sectionSlide({ kicker: 'API', title: 'One request, any city' })),
+      beats: [{ say: 'Skycast gives you the weather for any city, with one simple request.' }],
     },
     {
-      name: 'forecast-call',
-      narration: 'Here is a real request for Berlin, and the response that comes back.',
-      run: async (k) => {
-        const url = 'https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&current=temperature_2m';
-        const res = await (await fetch(url)).json();                  // live data, not a mock
-        await k.page.setContent(k.terminal(`curl '${url}'`, res, 'skycast — terminal'));
-        await k.start();
-        await k.caption('Request', 'Current weather in Berlin', 'One GET, JSON back.');
-        await k.typeAndRun();                                          // types the command, then reveals the output
-        await k.sleep(4000);
+      name: 'explain',
+      setup: async (k) => {
+        const res = await (await fetch(URL)).json();                      // live data, not a mock
+        await k.present(k.explainSlide({
+          kicker: 'How it works', title: 'Ask for a place, get the weather',
+          points: [{ title: 'You send a place', text: 'Latitude and longitude' }, { title: 'You get the weather', text: 'The temperature right now' }],
+          json: res, jsonTitle: 'GET /v1/forecast',
+        }));
       },
+      beats: [
+        { say: 'Here is how it works.' },
+        { say: 'You send a place: here, Berlin.', do: async (k) => { await k.next(); await k.mark(['"latitude"', '"longitude"']); } },
+        { say: 'And you get the weather back: the temperature right now.', do: async (k) => { await k.next(); await k.mark(['"temperature_2m":', '"temperature_2m":']); } },
+      ],
     },
     {
-      name: 'response-view',
-      narration: 'The same response in the viewer, so you can scroll through every field.',
-      run: async (k) => {
-        const res = await (await fetch('https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&hourly=temperature_2m')).json();
-        await k.page.setContent(k.jsonView('GET', '/v1/forecast?hourly=temperature_2m', res));
-        await k.start();
-        await k.scrollEl('#code', 1500, 6000);
+      name: 'terminal',
+      setup: async (k) => {
+        const res = await (await fetch(URL)).json();
+        await k.present(k.terminal(`curl '${URL}'`, res, 'skycast — terminal'));
       },
+      beats: [
+        { say: 'For developers, it is one line in the terminal.', do: (k) => k.typeAndRun() },   // types the command, then shows the output
+        { say: 'The answer comes back in under a second.' },
+      ],
     },
   ],
 };
@@ -271,28 +282,33 @@ node ~/.claude/skills/demo-video/render.js weather-api.scenes.js --audio --name 
 # → ~/Documents/claude-videos/weather-api/api-walkthrough-<stamp>.mp4
 ```
 
-### Example 5: a custom diagram slide
+### Example 5: a diagram built up piece by piece
 
-`k.doc()` gives you a branded blank page. Put any HTML or SVG in it; add `class="in d1"`, `d2`, … for staggered entrance animations and `class="flow"` on dashed lines for moving arrows. Put `flow` on the line and `in` on a wrapping `<g>`: the two animations can't share one element.
+`k.doc()` gives you a branded blank page for any HTML or SVG. Give each part `class="step"` and an `id`, then reveal it in the beat that explains it and spotlight it with `k.focus()`. Dashed lines with `class="flow"` get moving arrows.
 
 ```js
 {
-  name: 'architecture',
-  narration: 'Orders flow from the store, through our engine, out to every channel.',
-  run: (k) => k.slide(k.doc(`
+  name: 'how-it-works',
+  setup: (k) => k.present(k.doc(`
     <div class="wrap">
       <div class="k in">How it works</div>
-      <svg viewBox="0 0 1500 300" width="1500" style="margin-top:40px">
-        <g class="in d1"><rect x="0"    y="100" width="340" height="110" rx="16" fill="#063b2e" stroke="#10b981" stroke-width="3"/>
-          <text x="170"  y="165" text-anchor="middle" font-size="32" fill="#fff">Store</text></g>
-        <g class="in d2"><line class="flow" x1="340" y1="155" x2="580" y2="155" stroke="#34d399" stroke-width="4" stroke-dasharray="10 8"/></g>
-        <g class="in d3"><rect x="580"  y="100" width="340" height="110" rx="16" fill="#047857" stroke="#10b981" stroke-width="3"/>
-          <text x="750"  y="165" text-anchor="middle" font-size="32" fill="#fff">Engine</text></g>
-        <g class="in d4"><line class="flow" x1="920" y1="155" x2="1160" y2="155" stroke="#34d399" stroke-width="4" stroke-dasharray="10 8"/></g>
-        <g class="in d5"><rect x="1160" y="100" width="340" height="110" rx="16" fill="#063b2e" stroke="#10b981" stroke-width="3"/>
+      <svg viewBox="0 0 1500 300" width="1500" style="margin-top:40px;overflow:visible">
+        <g id="store" class="step"><rect x="0" y="100" width="340" height="110" rx="16" fill="#063b2e" stroke="#10b981" stroke-width="3"/>
+          <text x="170" y="165" text-anchor="middle" font-size="32" fill="#fff">Store</text></g>
+        <g id="a1" class="step"><line class="flow" x1="340" y1="155" x2="580" y2="155" stroke="#34d399" stroke-width="4" stroke-dasharray="10 8"/></g>
+        <g id="engine" class="step"><rect x="580" y="100" width="340" height="110" rx="16" fill="#047857" stroke="#10b981" stroke-width="3"/>
+          <text x="750" y="165" text-anchor="middle" font-size="32" fill="#fff">Engine</text></g>
+        <g id="a2" class="step"><line class="flow" x1="920" y1="155" x2="1160" y2="155" stroke="#34d399" stroke-width="4" stroke-dasharray="10 8"/></g>
+        <g id="channels" class="step"><rect x="1160" y="100" width="340" height="110" rx="16" fill="#063b2e" stroke="#10b981" stroke-width="3"/>
           <text x="1330" y="165" text-anchor="middle" font-size="32" fill="#fff">Channels</text></g>
       </svg>
-    </div>`), 10),
+    </div>`)),
+  beats: [
+    { say: 'It starts with your store.', do: async (k) => { await k.reveal('#store'); await k.focus('#store'); } },
+    { say: 'Every order goes to our engine,', do: async (k) => { await k.reveal('#a1, #engine'); await k.focus('#engine'); } },
+    { say: 'and from there, out to every sales channel.', do: async (k) => { await k.reveal('#a2, #channels'); await k.focus('#channels'); } },
+    { say: 'That is the whole picture.', do: (k) => k.focus(null) },                 // un-dim everything
+  ],
 }
 ```
 
@@ -373,61 +389,77 @@ alias demovideo='node ~/.claude/skills/demo-video/render.js'
 
 ### Writing a scenes file
 
-A scenes file is a small CommonJS module: one entry per scene, with what's **on screen** (`run`) and what the **narrator says** (`narration`). Start from [`skills/demo-video/example.scenes.js`](skills/demo-video/example.scenes.js).
+A scenes file is a small CommonJS module. Each scene has a `setup` (the first screen, prepared before recording starts) and a list of **beats**: one sentence the narrator **says**, plus the one visual step it **does**. The recording waits for each sentence to finish, so voice and picture can't drift. Start from [`skills/demo-video/example.scenes.js`](skills/demo-video/example.scenes.js).
 
 ```js
 module.exports = {
-  slug: 'acme-demo',                                  // library folder (overridable with --path)
-  name: 'acme-demo',                                  // video file name (overridable with --name)
-  brand: { primary: '#047857', logo: 'Acme™' },      // optional
+  slug: 'acme-demo',                                   // library folder (overridable with --path)
+  name: 'acme-demo',                                   // video file name (overridable with --name)
+  brand: { primary: '#047857', logo: 'Acme™' },       // optional; the rest of the palette derives from primary
+  pronounce: { Acme: 'Ack me', UCP: 'U C P' },          // how the voice should say words; captions keep the spelling
+  voiceSpeed: 1.22,                                    // optional; 1.22 ≈ 130 words per minute (bigger = slower)
+  beatGap: 0.8,                                        // optional; seconds of pause after each sentence
 
   scenes: [
     {
-      name: 'title',
-      narration: 'Acme. Checkout in one tap.',
-      run: (k) => k.slide(k.titleSlide({ title: 'Checkout in one tap', subtitle: 'Product demo' }), 6),
+      name: 'why',
+      setup: (k) => k.present(k.bulletSlide({ title: 'Why Acme', steps: true, bullets: ['Fast', 'Simple'] })),
+      beats: [
+        { say: 'Why do people choose Acme?' },                         // nothing new on screen yet
+        { say: 'First, it is fast.', do: (k) => k.next() },            // bullet 1 appears as it is said
+        { say: 'And second, it is simple.', do: (k) => k.next() },     // bullet 2
+      ],
     },
     {
       name: 'product-page',
-      narration: 'Every product page carries structured data that shopping agents can read.',
-      run: async (k) => {
-        await k.open('https://example-store.com/product/1');   // set the page up first…
-        await k.start();                                          // …then start recording
-        await k.caption('Product page', 'Structured data', 'What agents read, next to what people see.');
-        await k.highlight('.price'); await k.sleep(1500);
-        await k.drawer('application/ld+json', { '@type': 'Product', name: 'Widget' });
-        await k.sleep(4000);
-      },
+      setup: (k) => k.open('https://example-store.com/product/1'),    // page loads before recording starts
+      beats: [
+        { say: 'This is a product page.', do: (k) => k.caption('Product page', 'What people see') },
+        { say: 'Here is the price.', do: (k) => k.highlight('.price') },
+        { say: 'And this is what a computer reads from it.', do: (k) => k.drawer('Structured data', { '@type': 'Product', name: 'Widget', price: '9.99' }) },
+        { say: 'Its name, and its price.', do: (k) => k.mark(['"name"', '"price"']) },
+      ],
     },
   ],
 };
 ```
 
-**The kit (`k`)** that every `run` receives:
+- A beat is `{ say, do?, hold? }`. `do(k, beat)` makes one visual change; `beat.duration` is that sentence's length, useful for `k.revealAcross(n, beat.duration)` when one sentence lists several items. A beat without `say` lasts `hold` seconds.
+- Keep slow work (fetching data, loading pages) in `setup`. If a `do` takes longer than its sentence, the renderer prints a warning.
+- Older scenes written as `narration` + `run(k)` still render, but their voice isn't synced to the picture.
+
+**The kit (`k`)** available in `setup` and every `do`:
 
 | Helper | Does |
 |---|---|
-| `k.slide(html, seconds)` | Full-screen generated slide; starts recording and captures entrance animations |
-| `k.titleSlide` · `k.sectionSlide` · `k.bulletSlide` · `k.columnsSlide` · `k.endSlide` | Branded slide layouts |
-| `k.doc(bodyHtml, css)` | Branded blank page for custom slides / SVG diagrams |
-| `k.open(url)` · `k.start()` | Load a real page (popups stripped, URL bar shown), then begin recording |
+| `k.present(html)` | Show a generated slide and start recording (use in `setup`) |
+| `k.titleSlide` · `k.sectionSlide` · `k.endSlide` | Branded title, section and closing slides |
+| `k.bulletSlide({…, steps})` · `k.columnsSlide({…, steps})` | Lists; `steps: true` hides each item until it's revealed |
+| `k.explainSlide({kicker, title, points, json, jsonTitle})` | Numbered plain-language points + an optional small JSON pane |
+| `k.cardsSlide({kicker, title, cards, badge})` | A search box (`k.typeText('#q', …)`) and product cards with image, name, price |
+| `k.doc(bodyHtml, css)` | Branded blank page for custom slides and SVG diagrams (`class="step"` parts reveal one by one) |
+| `k.next(n)` · `k.revealAcross(n, seconds)` · `k.reveal(selector)` | Reveal the next hidden item(s): the "next click" |
+| `k.focus(selector)` · `k.focus(null)` | Spotlight one part, dim the rest / clear |
+| `k.mark(text \| [texts])` · `k.mark(null)` | Light up the JSON lines containing the text, fade the rest, scroll to them |
+| `k.open(url)` | Load a real page (popups stripped, URL bar shown) |
 | `k.caption(kicker, title, body)` · `k.hideCaption()` | Animated lower-third |
 | `k.highlight(selector)` · `k.click(selector)` · `k.type(selector, text)` | Outline, cursor-click, human-speed typing |
 | `k.scroll(px, ms)` · `k.scrollEl(selector, px, ms)` | Smooth scrolling of the page or a panel |
 | `k.drawer(title, json)` | Slide-in JSON panel beside the live page |
-| `k.jsonView(method, url, json)` | Full-screen HTTP response viewer |
-| `k.terminal(cmd, output)` + `k.typeAndRun()` | Terminal that types the command, then shows the output |
+| `k.jsonView(method, url, json)` · `k.terminal(cmd, output)` + `k.typeAndRun()` | Full-screen HTTP response viewer / typed terminal |
 | `k.show(html)` | Switch screens mid-scene without restarting the recording |
-| `k.page` | The raw Playwright page, for anything else |
+| `k.page` · `k.state` | The raw Playwright page / a scratch object to pass data from `setup` to beats |
 
-Fetch live data inside `run` (Node's built-in `fetch`) so what's on screen is real. The full reference is in [`SKILL.md`](skills/demo-video/SKILL.md).
+Fetch live data in `setup` (Node's built-in `fetch`) so what's on screen is real. The full reference, including tips on writing for non-technical viewers, is in [`SKILL.md`](skills/demo-video/SKILL.md).
 
 ### Narration
 
 - **Silent by default.** A silent audio track is still included so video editors import it cleanly. Pass `--audio` (or say *"with audio"*) for narration.
 - **Voices:** `ryan` (default, US male), `amy`, `lessac`, `libritts`, `alan` (UK male), `jenny` (UK female). Extra voices download on demand: `bash ~/.claude/skills/demo-video/setup.sh amy`.
-- **Timing:** each scene lasts as long as the longer of its picture and its narration (+ a short lead-in and tail). If the voice runs longer than a recorded page, the last frame is held.
-- **Pronunciation:** spell acronyms the way they should be spoken (`U C P`, `J SON L D`, `O Auth`) and respell brand names phonetically in `narration`; captions keep the real spelling.
+- **Pace:** about 130 words per minute with a short pause after every sentence. Slow it further with `voiceSpeed: 1.35`; for a dense scene, split long sentences into more beats rather than speeding up.
+- **In sync by construction:** every sentence is generated and measured *before* recording, the recording waits for it, and its audio is placed exactly where its beat started.
+- **Pronunciation:** add words to `pronounce`, e.g. `{ Goofre: 'go free', 'llms.txt': 'L-L-M-s dot text', UCP: 'U C P' }`. Matching is whole-word and case-insensitive; captions keep the real spelling.
+- **Re-renders are cheap:** audio for unchanged sentences is reused, and a scene is only re-recorded when its narration changed or you name it in `--only`.
 
 ### What "good output" looks like
 
@@ -529,10 +561,11 @@ export CLAUDE_VIDEO_DIR="$HOME/Dropbox/videos"
 
 ## How it works
 
-1. **Record.** For each scene, `render.js` opens a fresh 1920×1080 headless Chrome context and runs the scene's `run(k)`. Frames are captured with the Chrome DevTools **screencast** (JPEG, only when the screen changes) and timed with a monotonic clock, so a laptop sleeping mid-render can't stretch a scene into hours. ffmpeg turns the variable-rate frames into constant 30 fps H.264.
-2. **Narrate** (with `--audio`). Piper synthesizes each scene's `narration` locally. The scene is fitted to the longer of picture and speech (holding the last frame if needed), audio is loudness-normalized to −16 LUFS, and each scene fades in and out.
-3. **Stitch.** Finished scenes are concatenated without re-encoding into the final MP4 (`+faststart`, so it streams in browsers).
-4. **File.** The video, per-scene clips, contact sheet, timeline and source archive are written into the library, and the `latest` links are updated.
+1. **Speak first.** With `--audio`, Piper turns every beat's sentence into audio, applying the `pronounce` list, and measures it. Without audio, each beat's length is estimated from its word count.
+2. **Record to the voice.** For each scene, `render.js` opens a fresh 1920×1080 headless Chrome context, runs `setup`, then for every beat runs its visual step and waits until that sentence has been spoken plus a short pause. Frames come from the Chrome DevTools **screencast**, timed on a monotonic clock so a laptop sleeping mid-render can't stretch a scene into hours. ffmpeg turns them into constant 30 fps H.264.
+3. **Place the audio.** Each sentence is placed at the exact moment its beat started, mixed, loudness-normalized to −16 LUFS, and faded at the scene edges.
+4. **Stitch.** Finished scenes are concatenated without re-encoding into the final MP4 (`+faststart`, so it streams in browsers).
+5. **File.** The video, per-scene clips, contact sheet, timeline and source archive are written into the library, and the `latest` links are updated.
 
 ---
 
@@ -553,8 +586,11 @@ Pass its selector to `k.open(url, { removeSelectors: ['.my-banner'] })`, or remo
 **JSON panel text is hard to read on some sites**
 The host page's CSS is leaking in. The panel already forces its own colors with `!important`; if a site still wins, add a more specific rule via `k.page.addStyleTag(...)`.
 
-**A scene freezes for a long time at the end**
-The narration is much longer than what the scene shows. Add more `k.sleep()`/scrolling to `run`, or shorten the narration.
+**"a beat's visuals took Xs but its narration is Ys"**
+That beat's `do` is slower than its sentence (usually a page load or data fetch). Move the slow work into the scene's `setup`, or split the beat.
+
+**Voice and picture don't line up**
+The scene is written in the older `narration` + `run` style, which lays the voice over the whole scene. Rewrite it as beats.
 
 **The voice mispronounces a name**
 Respell it phonetically in `narration` only (e.g. `"Acmay"`). Captions keep the real spelling.
