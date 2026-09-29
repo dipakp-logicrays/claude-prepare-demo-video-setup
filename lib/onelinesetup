@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# onelinesetup — install the demo-video skill without cloning the repo.
+#
+#   curl -s https://raw.githubusercontent.com/dipakp-logicrays/claude-prepare-demo-video-setup/main/lib/onelinesetup | bash
+#
+# Optionally pin a branch or tag (and pass install.sh flags after it):
+#   curl -s .../lib/onelinesetup | bash -s -- v1.0.0
+#   curl -s .../lib/onelinesetup | bash -s -- main --no-setup
+#
+# Downloads the skill files into a temp dir, then hands off to install.sh so the
+# dependency checks and backup logic live in exactly one place.
+set -euo pipefail
+
+REPO="${CLAUDE_DEMO_VIDEO_REPO:-dipakp-logicrays/claude-prepare-demo-video-setup}"
+REF="${1:-${CLAUDE_DEMO_VIDEO_REF:-main}}"
+shift || true
+BASE="https://raw.githubusercontent.com/$REPO/$REF"
+
+bad() { printf '  \033[31m✗\033[0m %s\n' "$1"; }
+
+command -v curl >/dev/null 2>&1 || { bad "curl is required."; exit 1; }
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/skills/demo-video"
+
+printf '\033[1m%s\033[0m\n' "Downloading demo-video ($REPO@$REF)"
+
+fetch() {
+  local path="$1" dest="$2"
+  if ! curl -fsSL "$BASE/$path" -o "$dest"; then
+    bad "Could not download $path from $BASE"
+    echo "     Check that the repo is public and the ref '$REF' exists."
+    exit 1
+  fi
+  [ -s "$dest" ] || { bad "Downloaded $path is empty."; exit 1; }
+  printf '  \033[32m✓\033[0m %s\n' "$path"
+}
+
+for f in SKILL.md render.js kit.js setup.sh example.scenes.js; do
+  fetch "skills/demo-video/$f" "$TMP/skills/demo-video/$f"
+done
+fetch "install.sh" "$TMP/install.sh"
+
+echo
+bash "$TMP/install.sh" "$@"
